@@ -13,34 +13,35 @@ import (
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
-	"github.com/joho/godotenv"
 	"github.com/remeh/sizedwaitgroup"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 type Doujin struct {
-	Title      string   `json:"title" bson:"title,omitempty"`
-	Url        string   `json:"url" bson:"url,omitempty"`
-	Thumb      string   `json:"thumb" bson:"thumb,omitempty"`
-	TotalPages int      `json:"total" bson:"total,omitempty"`
-	Pages      []string `json:"pages" bson:"pages,omitempty"`
+	Title      string `json:"title" bson:"title,omitempty"`
+	Url        string `json:"url" bson:"url,omitempty"`
+	Thumb      string `json:"thumb" bson:"thumb,omitempty"`
+	TotalPages int    `json:"total" bson:"total,omitempty"`
+	Pages      []Page `json:"pages" bson:"pages,omitempty"`
 	done_pages int
 	mutex      sync.Mutex
+}
+
+type Page struct {
+	Number int    `json:"number" bson:"number,omitempty"`
+	URL    string `json:"url" bson:"url,omitempty"`
 }
 
 type TasksWithErrors []func() error
 
 func main() {
-	err := godotenv.Load()
-	if err != nil {
-		log.Fatal("Error loading .env file")
-	}
 	log.Println("Starting the scraper")
+	total_threads := 2000
 	// Connect to database
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	client, err := mongo.Connect(ctx, options.Client().ApplyURI(os.Getenv("MONGO_URI")))
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI("mongodb+srv://stargazer-2:0wdyOv85cDtSoUwC@cluster0.y9yur.mongodb.net/?retryWrites=true&w=majority"))
 
 	check(err)
 
@@ -58,7 +59,7 @@ func main() {
 
 	u, _ := url.Parse(HOME)
 
-	wg := sizedwaitgroup.New(1000)
+	wg := sizedwaitgroup.New(total_threads)
 
 	for i := 1; i <= 10; i++ {
 		new_url := setURLQuery(u, "page", fmt.Sprint(i))
@@ -87,7 +88,7 @@ func main() {
 	wg.Wait()
 
 	log.Println("Starting to resolve doujin details")
-	wg = sizedwaitgroup.New(1000)
+	wg = sizedwaitgroup.New(total_threads)
 
 	for i := range doujin_arr {
 		wg.Add()
@@ -100,18 +101,15 @@ func main() {
 	wg.Wait()
 
 	log.Println("Starting to resolve doujin pages")
-	wg = sizedwaitgroup.New(1000)
+	wg = sizedwaitgroup.New(total_threads)
 
 	for index := range doujin_arr {
-		wg.Add()
-		go func(index int) {
-			err := doujin_arr[index].ResolvePages(u)
-			check(err)
-			wg.Done()
-		}(index)
+		err := doujin_arr[index].ResolvePages(u, &wg)
+		check(err)
 	}
 
 	wg.Wait()
+
 	log.Println("Saving to JSON")
 	SaveToJSON(doujin_arr, "all.json")
 }
@@ -219,14 +217,14 @@ func (doujin *Doujin) ResolveDoujinDetails(base_url *url.URL) error {
 	}
 
 	doujin.TotalPages = total
-	log.Printf("%s Total - %d", doujin.Url, total)
+	log.Println(total)
 
 	// TODO - Resolve tags and other shit
 
 	return nil
 }
 
-func (doujin *Doujin) ResolvePages(base_url *url.URL) error {
+func (doujin *Doujin) ResolvePages(base_url *url.URL, wg *sizedwaitgroup.SizedWaitGroup) error {
 	for i := 1; i <= doujin.TotalPages; i++ {
 		d_url_path, _ := url.JoinPath(base_url.Path, doujin.Url)
 		d_url, _ := url.Parse(base_url.String())
@@ -234,21 +232,31 @@ func (doujin *Doujin) ResolvePages(base_url *url.URL) error {
 
 		page_path := d_url.String()
 
-		resp, err := http.Get(page_path)
+		wg.Add()
+		go func(page_path string, page int) error {
+			resp, err := http.Get(page_path)
 
-		if err != nil {
-			return err
-		}
+			if err != nil {
+				return err
+			}
 
-		doc, err := goquery.NewDocumentFromReader(resp.Body)
+			doc, err := goquery.NewDocumentFromReader(resp.Body)
 
-		if err != nil {
-			return err
-		}
+			if err != nil {
+				return err
+			}
 
-		image := doc.Find("#image-container > a > img").AttrOr("src", "not found")
-		doujin.Pages = append(doujin.Pages, image)
+			image := doc.Find("#image-container > a > img").AttrOr("src", "not found")
+
+			doujin.mutex.Lock()
+			doujin.Pages = append(doujin.Pages, Page{
+				Number: page,
+				URL:    image,
+			})
+			doujin.mutex.Unlock()
+			wg.Done()
+			return nil
+		}(page_path, i)
 	}
-
 	return nil
 }

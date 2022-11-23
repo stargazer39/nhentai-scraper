@@ -6,7 +6,15 @@ import (
 )
 
 func GetDoujinPageURL(base_url *url.URL, doujin_url string, page_number int) (*url.URL, error) {
-	page_path, err := url.JoinPath(base_url.Path, doujin_url, fmt.Sprint(page_number))
+	var page_path string
+	var err error
+
+	if page_number < 0 {
+		page_path, err = url.JoinPath(base_url.Path, doujin_url)
+	} else {
+		page_path, err = url.JoinPath(base_url.Path, doujin_url, fmt.Sprint(page_number))
+	}
+
 	if err != nil {
 		return nil, err
 	}

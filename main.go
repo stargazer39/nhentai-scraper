@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,11 +21,12 @@ import (
 )
 
 type Doujin struct {
-	Title      string `json:"title" bson:"title,omitempty"`
-	Url        string `json:"url" bson:"url,omitempty"`
-	Thumb      string `json:"thumb" bson:"thumb,omitempty"`
-	TotalPages int    `json:"total" bson:"total,omitempty"`
-	Pages      []Page `json:"pages" bson:"pages,omitempty"`
+	Title      string              `json:"title" bson:"title,omitempty"`
+	Url        string              `json:"url" bson:"url,omitempty"`
+	Thumb      string              `json:"thumb" bson:"thumb,omitempty"`
+	TotalPages int                 `json:"total" bson:"total,omitempty"`
+	Pages      []Page              `json:"pages" bson:"pages,omitempty"`
+	Tags       map[string][]string `json:"tags" bson:"tags,omitempty"`
 	done_pages int
 	mutex      sync.Mutex
 }
@@ -37,7 +40,7 @@ type TasksWithErrors []func() error
 
 func main() {
 	log.Println("Starting the scraper")
-	total_threads := 1200
+	total_threads := 1000
 	// Connect to database
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -61,7 +64,7 @@ func main() {
 
 	wg := sizedwaitgroup.New(total_threads)
 
-	for i := 1; i <= 10; i++ {
+	for i := 1; i <= 2; i++ {
 		new_url := setURLQuery(u, "page", fmt.Sprint(i))
 		page_url := new_url.String()
 
@@ -182,7 +185,7 @@ func SaveToJSON(a any, file string) {
 }
 
 func (doujin *Doujin) ResolveDoujinDetails(base_url *url.URL) error {
-	page_url, err := GetDoujinPageURL(base_url, doujin.Url, 1)
+	page_url, err := GetDoujinPageURL(base_url, doujin.Url, -1)
 
 	log.Println("url", page_url.String())
 	if err != nil {
@@ -205,7 +208,11 @@ func (doujin *Doujin) ResolveDoujinDetails(base_url *url.URL) error {
 		return err
 	}
 
-	total_s := doc.Find(".num-pages").First().Text()
+	total_s := doc.Find("#info > div:nth-child(4)").Text()
+
+	r, _ := regexp.Compile(`^[^\d]*(\d+)`)
+
+	total_s = r.FindString(total_s)
 	// log.Println(total_s)
 	total, err := strconv.Atoi(total_s)
 
@@ -218,6 +225,20 @@ func (doujin *Doujin) ResolveDoujinDetails(base_url *url.URL) error {
 
 	// TODO - Resolve tags and other shit
 
+	tags_elem := doc.Find("#tags > .tag-container")
+	// cloned.Children().Remove()
+
+	tags := make(map[string][]string)
+
+	tags_elem.Each(func(i int, s *goquery.Selection) {
+		key := strings.ToLower(strings.TrimSpace(s.Contents().First().Text()))
+
+		s.Find(".tag").Each(func(i int, s *goquery.Selection) {
+			tags[key] = append(tags[key], strings.ToLower(s.Text()))
+		})
+	})
+
+	doujin.Tags = tags
 	return nil
 }
 

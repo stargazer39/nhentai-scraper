@@ -37,7 +37,7 @@ type TasksWithErrors []func() error
 
 func main() {
 	log.Println("Starting the scraper")
-	total_threads := 2000
+	total_threads := 1200
 	// Connect to database
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -146,6 +146,10 @@ func GetGallery(page_url string) ([]Doujin, error) {
 
 	var doujin_arr []Doujin
 
+	if doc.Find(".gallery").Length() == 0 {
+		return nil, fmt.Errorf("no galleries in this page")
+	}
+
 	doc.Find(".gallery").Each(func(j int, s *goquery.Selection) {
 		str, _ := s.Find("a").Attr("href")
 		name := s.Find(".caption").Text()
@@ -178,21 +182,14 @@ func SaveToJSON(a any, file string) {
 }
 
 func (doujin *Doujin) ResolveDoujinDetails(base_url *url.URL) error {
-	d_url_path, err := url.JoinPath(base_url.Path, doujin.Url)
+	page_url, err := GetDoujinPageURL(base_url, doujin.Url, 1)
 
+	log.Println("url", page_url.String())
 	if err != nil {
-		return err
+		check(err)
 	}
 
-	d_url, err := url.Parse(base_url.String())
-
-	if err != nil {
-		return err
-	}
-
-	d_url.Path = d_url_path + "1"
-
-	page_path := d_url.String()
+	page_path := page_url.String()
 
 	resp, err := http.Get(page_path)
 
@@ -209,7 +206,7 @@ func (doujin *Doujin) ResolveDoujinDetails(base_url *url.URL) error {
 	}
 
 	total_s := doc.Find(".num-pages").First().Text()
-
+	// log.Println(total_s)
 	total, err := strconv.Atoi(total_s)
 
 	if err != nil {
@@ -217,7 +214,7 @@ func (doujin *Doujin) ResolveDoujinDetails(base_url *url.URL) error {
 	}
 
 	doujin.TotalPages = total
-	log.Println(total)
+	// log.Println(total)
 
 	// TODO - Resolve tags and other shit
 
@@ -225,12 +222,15 @@ func (doujin *Doujin) ResolveDoujinDetails(base_url *url.URL) error {
 }
 
 func (doujin *Doujin) ResolvePages(base_url *url.URL, wg *sizedwaitgroup.SizedWaitGroup) error {
+	log.Println(doujin)
 	for i := 1; i <= doujin.TotalPages; i++ {
-		d_url_path, _ := url.JoinPath(base_url.Path, doujin.Url)
-		d_url, _ := url.Parse(base_url.String())
-		d_url.Path = d_url_path + fmt.Sprint(i)
+		page_url, err := GetDoujinPageURL(base_url, doujin.Url, i)
 
-		page_path := d_url.String()
+		if err != nil {
+			check(err)
+		}
+
+		page_path := page_url.String()
 
 		wg.Add()
 		go func(page_path string, page int) error {
@@ -246,13 +246,15 @@ func (doujin *Doujin) ResolvePages(base_url *url.URL, wg *sizedwaitgroup.SizedWa
 				return err
 			}
 
-			image := doc.Find("#image-container > a > img").AttrOr("src", "not found")
+			image := doc.Find("#image-container img").First().AttrOr("src", "not found")
 
 			doujin.mutex.Lock()
 			doujin.Pages = append(doujin.Pages, Page{
 				Number: page,
 				URL:    image,
 			})
+
+			// log.Println(image)
 			doujin.mutex.Unlock()
 			wg.Done()
 			return nil

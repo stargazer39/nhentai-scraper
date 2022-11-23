@@ -23,14 +23,15 @@ import (
 )
 
 type Doujin struct {
-	Title      string              `json:"title" bson:"title,omitempty"`
-	Url        string              `json:"url" bson:"url,omitempty"`
-	Thumb      string              `json:"thumb" bson:"thumb,omitempty"`
-	TotalPages int                 `json:"total" bson:"total,omitempty"`
-	Pages      []Page              `json:"pages" bson:"pages,omitempty"`
-	Tags       map[string][]string `json:"tags" bson:"tags,omitempty"`
+	Title      string              `json:"title" bson:"title"`
+	Url        string              `json:"url" bson:"url"`
+	Thumb      string              `json:"thumb" bson:"thumb"`
+	TotalPages int                 `json:"total" bson:"total"`
+	Pages      []Page              `json:"pages" bson:"pages"`
+	Tags       map[string][]string `json:"tags" bson:"tags"`
 	done_pages int
 	mutex      sync.Mutex
+	err        bool
 }
 
 type Page struct {
@@ -103,7 +104,12 @@ func main() {
 	for i := range doujin_arr {
 		wg.Add()
 		go func(index int) {
-			doujin_arr[index].ResolveDoujinDetails(u)
+			err := doujin_arr[index].ResolveDoujinDetails(u)
+
+			if err != nil {
+				log.Println(err)
+				doujin_arr[index].err = true
+			}
 			wg.Done()
 		}(i)
 	}
@@ -113,6 +119,11 @@ func main() {
 	log.Println("Starting to resolve doujin pages")
 
 	for index := range doujin_arr {
+		if doujin_arr[index].err {
+			log.Printf("Skipping %s due to error ", doujin_arr[index].Title)
+			return
+		}
+
 		count, err := doujin.CountDocuments(context.TODO(), bson.D{{Key: "title", Value: doujin_arr[index].Title}, {Key: "url", Value: doujin_arr[index].Url}})
 
 		check(err)
@@ -191,13 +202,19 @@ func GetGallery(page_url string) ([]Doujin, error) {
 	doc.Find(".gallery").Each(func(j int, s *goquery.Selection) {
 		str, _ := s.Find("a").Attr("href")
 		name := s.Find(".caption").Text()
-		img, _ := s.Find("img").Attr("src")
+		img, _ := s.Find("img").Attr("data-src")
 
 		d := Doujin{
 			Title: name,
 			Url:   str,
 			Thumb: img,
 		}
+
+		log.Printf("Title - %s\nURL - %s\nThumb - %s\n\n", name, str, img)
+		if strings.TrimSpace(name) == "" || strings.TrimSpace(str) == "" || strings.TrimSpace(img) == "" {
+			return
+		}
+		log.Println(img)
 
 		doujin_arr = append(doujin_arr, d)
 	})
@@ -253,6 +270,10 @@ func (doujin *Doujin) ResolveDoujinDetails(base_url *url.URL) error {
 	}
 
 	doujin.TotalPages = total
+
+	if total == 0 {
+		return fmt.Errorf("error. total 0")
+	}
 
 	// TODO - Resolve tags and other shit
 

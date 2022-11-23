@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/remeh/sizedwaitgroup"
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -40,7 +42,12 @@ type TasksWithErrors []func() error
 
 func main() {
 	log.Println("Starting the scraper")
-	total_threads := 1000
+	start := flag.Int("start", 1, "Starting page")
+	stop := flag.Int("stop", 2, "Stop page")
+	threads := flag.Int("t", 12, "Threads")
+	flag.Parse()
+
+	total_threads := *threads
 	// Connect to database
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -54,8 +61,8 @@ func main() {
 		}
 	}()
 
-	// db := client.Database("testing")
-	// doujin := db.Collection("doujin")
+	db := client.Database("testing")
+	doujin := db.Collection("doujin")
 
 	doujin_arr := []Doujin{}
 	doujin_mutex := sync.Mutex{}
@@ -64,7 +71,7 @@ func main() {
 
 	wg := sizedwaitgroup.New(total_threads)
 
-	for i := 1; i <= 2; i++ {
+	for i := *start; i <= *stop; i++ {
 		new_url := setURLQuery(u, "page", fmt.Sprint(i))
 		page_url := new_url.String()
 
@@ -104,15 +111,43 @@ func main() {
 	wg.Wait()
 
 	log.Println("Starting to resolve doujin pages")
-	wg = sizedwaitgroup.New(total_threads)
 
 	for index := range doujin_arr {
-		err := doujin_arr[index].ResolvePages(u, &wg)
+		count, err := doujin.CountDocuments(context.TODO(), bson.D{{Key: "title", Value: doujin_arr[index].Title}, {Key: "url", Value: doujin_arr[index].Url}})
+
 		check(err)
+
+		if count > 0 {
+			log.Printf("Title %s already exists", doujin_arr[index].Title)
+			continue
+		}
+
+		wg = sizedwaitgroup.New(doujin_arr[index].TotalPages)
+		err2 := doujin_arr[index].ResolvePages(u, &wg)
+		check(err2)
+		wg.Wait()
+
+		check_fail := false
+
+		for _, p := range doujin_arr[index].Pages {
+			if p.URL == "not found" {
+				check_fail = true
+				break
+			}
+		}
+
+		if len(doujin_arr[index].Pages) != doujin_arr[index].TotalPages {
+			check_fail = true
+		}
+
+		if !check_fail {
+			_, err2 := doujin.InsertOne(context.TODO(), doujin_arr[index])
+			log.Printf("%s added", doujin_arr[index].Title)
+			check(err2)
+		} else {
+			log.Printf("%s was not added. sorry.", doujin_arr[index].Title)
+		}
 	}
-
-	wg.Wait()
-
 	log.Println("Saving to JSON")
 	SaveToJSON(doujin_arr, "all.json")
 }
@@ -186,8 +221,6 @@ func SaveToJSON(a any, file string) {
 
 func (doujin *Doujin) ResolveDoujinDetails(base_url *url.URL) error {
 	page_url, err := GetDoujinPageURL(base_url, doujin.Url, -1)
-
-	log.Println("url", page_url.String())
 	if err != nil {
 		check(err)
 	}
@@ -213,7 +246,6 @@ func (doujin *Doujin) ResolveDoujinDetails(base_url *url.URL) error {
 	r, _ := regexp.Compile(`^[^\d]*(\d+)`)
 
 	total_s = r.FindString(total_s)
-	// log.Println(total_s)
 	total, err := strconv.Atoi(total_s)
 
 	if err != nil {
@@ -221,12 +253,10 @@ func (doujin *Doujin) ResolveDoujinDetails(base_url *url.URL) error {
 	}
 
 	doujin.TotalPages = total
-	// log.Println(total)
 
 	// TODO - Resolve tags and other shit
 
 	tags_elem := doc.Find("#tags > .tag-container")
-	// cloned.Children().Remove()
 
 	tags := make(map[string][]string)
 
@@ -243,7 +273,7 @@ func (doujin *Doujin) ResolveDoujinDetails(base_url *url.URL) error {
 }
 
 func (doujin *Doujin) ResolvePages(base_url *url.URL, wg *sizedwaitgroup.SizedWaitGroup) error {
-	log.Println(doujin)
+	// log.Println(doujin)
 	for i := 1; i <= doujin.TotalPages; i++ {
 		page_url, err := GetDoujinPageURL(base_url, doujin.Url, i)
 

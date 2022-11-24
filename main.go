@@ -20,8 +20,6 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-type TasksWithErrors []func() error
-
 func main() {
 	log.Println("Starting the scraper")
 	start := flag.Int("start", 1, "Starting page")
@@ -46,6 +44,16 @@ func main() {
 	db := client.Database("testing")
 	doujin := db.Collection("doujin")
 
+	indexModel := mongo.IndexModel{
+		Keys:    bson.D{{Key: "title", Value: -1}, {Key: "url", Value: -1}},
+		Options: options.Index().SetUnique(true),
+	}
+
+	_, err4 := doujin.Indexes().CreateOne(context.TODO(), indexModel)
+	if err4 != nil {
+		check(err4)
+	}
+
 	doujin_arr := []Doujin{}
 	doujin_mutex := sync.Mutex{}
 
@@ -58,8 +66,9 @@ func main() {
 		page_url := new_url.String()
 
 		wg.Add()
-
 		go func(page_url string) {
+			defer wg.Done()
+
 			doujins, err := GetGallery(page_url)
 
 			if err != nil {
@@ -72,8 +81,6 @@ func main() {
 			doujin_mutex.Lock()
 			doujin_arr = append(doujin_arr, doujins...)
 			doujin_mutex.Unlock()
-
-			wg.Done()
 		}(page_url)
 	}
 
@@ -82,26 +89,6 @@ func main() {
 	log.Println("Starting to resolve doujin details")
 	wg = sizedwaitgroup.New(total_threads)
 
-	for i := range doujin_arr {
-		wg.Add()
-		go func(index int) {
-			err := doujin_arr[index].ResolveDoujinDetails(u)
-
-			if err != nil {
-				log.Println(err)
-				doujin_arr[index].err = true
-			}
-
-			// log.Printf("%s is details done\n", doujin_arr[index].Title)
-			wg.Done()
-		}(i)
-	}
-
-	wg.Wait()
-
-	log.Println("Starting to resolve doujin pages")
-
-	wgn := sizedwaitgroup.New(total_threads)
 	progress := make(chan TaskProgress)
 
 	total := len(doujin_arr)
@@ -144,28 +131,34 @@ func main() {
 		}
 	}()
 
-	for index := range doujin_arr {
-		if doujin_arr[index].err {
-			log.Printf("Skipping %s due to error ", doujin_arr[index].Title)
-			return
-		}
+	for i := range doujin_arr {
+		wg.Add()
+		go func(index int) {
+			defer wg.Done()
+			err := doujin_arr[index].ResolveDoujinDetails(u)
 
-		count, err := doujin.CountDocuments(context.TODO(), bson.D{{Key: "title", Value: doujin_arr[index].Title}, {Key: "url", Value: doujin_arr[index].Url}})
+			if err != nil {
+				log.Println(err)
+				doujin_arr[index].err = true
+				log.Printf("Skipping %s due to error %v", doujin_arr[index].Title, err)
+				return
+			} else {
+				count, err := doujin.CountDocuments(context.TODO(), bson.D{{Key: "title", Value: doujin_arr[index].Title}, {Key: "url", Value: doujin_arr[index].Url}})
 
-		check(err)
+				check(err)
 
-		if count > 0 {
-			log.Printf("Title %s already exists", doujin_arr[index].Title)
-			continue
-		}
+				if count > 0 {
+					log.Printf("Title %s already exists", doujin_arr[index].Title)
+					return
+				}
 
-		err2 := doujin_arr[index].ResolvePages(u, &wgn, progress, index)
-		log.Println("1111111111111111111111111")
-		check(err2)
+				err2 := doujin_arr[index].ResolvePages(u, &wg, progress, index)
+				check(err2)
+			}
+		}(i)
 	}
-
 	log.Println("Resolve tasks were added. waiting them to be finished")
-	wgn.Wait()
+	wg.Wait()
 
 	log.Println("Saving to JSON")
 	SaveToJSON(doujin_arr, "all.json")

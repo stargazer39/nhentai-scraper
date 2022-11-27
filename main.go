@@ -28,6 +28,10 @@ func main() {
 	flag.Parse()
 
 	total_threads := *threads
+
+	// Initialize termbox
+	// TermInit()
+
 	// Connect to database
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -42,14 +46,14 @@ func main() {
 	}()
 
 	db := client.Database("testing")
-	doujin := db.Collection("doujin")
+	doujin_collection := db.Collection("doujin")
 
 	indexModel := mongo.IndexModel{
 		Keys:    bson.D{{Key: "title", Value: -1}, {Key: "url", Value: -1}},
 		Options: options.Index().SetUnique(true),
 	}
 
-	_, err4 := doujin.Indexes().CreateOne(context.TODO(), indexModel)
+	_, err4 := doujin_collection.Indexes().CreateOne(context.TODO(), indexModel)
 	if err4 != nil {
 		check(err4)
 	}
@@ -59,7 +63,35 @@ func main() {
 
 	u, _ := url.Parse(HOME)
 
+	p1 := make(chan Progress)
+
+	// Progress
+	go func() {
+		done := float32(0)
+
+		for {
+			p := <-p1
+
+			if p.Reset {
+				done = 0
+				continue
+			}
+
+			done++
+
+			// MoveToBeginning()
+
+			log.Printf("%f/%f Progress", done, p.Total)
+			if p.End {
+				break
+			}
+		}
+	}()
+
 	wg := sizedwaitgroup.New(total_threads)
+	http_client := http.Client{
+		Timeout: 120 * time.Second,
+	}
 
 	for i := *start; i <= *stop; i++ {
 		new_url := setURLQuery(u, "page", fmt.Sprint(i))
@@ -69,96 +101,113 @@ func main() {
 		go func(page_url string) {
 			defer wg.Done()
 
-			doujins, err := GetGallery(page_url)
+			doujins, err := GetGallery(page_url, http_client)
 
 			if err != nil {
-				log.Printf("Getting %s failed. %v\n", page_url, err)
+				p1 <- Progress{
+					Info:  fmt.Sprintf("Getting %s failed. %v\n", page_url, err),
+					Total: float32(*stop),
+				}
 				return
 			}
 
-			log.Printf("Got %s Total - %d\n", page_url, len(doujins))
-
 			doujin_mutex.Lock()
-			doujin_arr = append(doujin_arr, doujins...)
+
+			for _, r := range doujins {
+				count, err := doujin_collection.CountDocuments(context.TODO(), bson.D{{Key: "title", Value: r.Title}, {Key: "url", Value: r.Url}})
+
+				check(err)
+
+				if count > 0 {
+					log.Printf("Title %s already exists", r.Title)
+					continue
+				}
+				doujin_arr = append(doujin_arr, r)
+			}
+
+			// doujin_arr = append(doujin_arr, doujins...)
 			doujin_mutex.Unlock()
+
+			p1 <- Progress{
+				Current: -1,
+				Total:   float32(*stop),
+			}
 		}(page_url)
 	}
 
 	wg.Wait()
 
 	log.Println("Starting to resolve doujin details")
-	wg = sizedwaitgroup.New(total_threads)
 
-	progress := make(chan TaskProgress)
+	// MoveDown(1)
+
+	p1 <- Progress{
+		Reset: true,
+	}
+
+	wg2 := sizedwaitgroup.New(total_threads)
 
 	total := len(doujin_arr)
 
-	// Monitor thread
-	go func() {
-		for total > 0 {
-			task_progress := <-progress
+	for i := range doujin_arr {
+		err := doujin_arr[i].ResolveDoujinDetails(u)
+		// log.Println("resolve")
+		if err != nil {
+			log.Println(err)
+			doujin_arr[i].err = true
+			log.Printf("Skipping %s due to error %v", doujin_arr[i].Title, err)
+			return
+		} else {
+			resolve_done := make(chan bool)
 
-			log.Printf("%d progress is %d/%d", task_progress.ID, task_progress.Done, task_progress.Total)
-			if task_progress.Finished {
-				log.Printf("%d is done", task_progress.ID)
-				defer func() {
-					total--
-					log.Println(total)
-				}()
+			go func(i int) {
+				co := 0
 
-				final := task_progress.Final
-				check_fail := false
+				for doujin_arr[i].TotalPages != co {
+					<-resolve_done
+					co++
+				}
 
-				for _, p := range final.Pages {
-					if p.URL == "not found" {
-						check_fail = true
-						break
+				for _, value := range doujin_arr[i].Pages {
+					if value.URL == NOT_FOUND {
+						log.Println("NOT_FOUND")
+						return
 					}
 				}
 
-				if len(final.Pages) != final.TotalPages {
-					check_fail = true
-				}
-
-				if !check_fail {
-					_, err2 := doujin.InsertOne(context.TODO(), final)
-					log.Printf("%s added", final.Title)
-					check(err2)
-				} else {
-					log.Printf("%s was not added. sorry.", final.Title)
-				}
-			}
-		}
-	}()
-
-	for i := range doujin_arr {
-		wg.Add()
-		go func(index int) {
-			defer wg.Done()
-			err := doujin_arr[index].ResolveDoujinDetails(u)
-
-			if err != nil {
-				log.Println(err)
-				doujin_arr[index].err = true
-				log.Printf("Skipping %s due to error %v", doujin_arr[index].Title, err)
-				return
-			} else {
-				count, err := doujin.CountDocuments(context.TODO(), bson.D{{Key: "title", Value: doujin_arr[index].Title}, {Key: "url", Value: doujin_arr[index].Url}})
-
-				check(err)
-
-				if count > 0 {
-					log.Printf("Title %s already exists", doujin_arr[index].Title)
+				if len(doujin_arr[i].Pages) != doujin_arr[i].TotalPages {
+					log.Println("NOT_EQUAL_PAGES")
 					return
 				}
 
-				err2 := doujin_arr[index].ResolvePages(u, &wg, progress, index)
-				check(err2)
+				_, err := doujin_collection.InsertOne(context.TODO(), doujin_arr[i])
+
+				check(err)
+
+				p1 <- Progress{
+					Total: float32(total),
+				}
+			}(i)
+
+			for pg := 0; pg < doujin_arr[i].TotalPages; pg++ {
+				wg2.Add()
+				go func(pg int, i int) {
+					defer wg2.Done()
+
+					// log.Println("resolve page")
+					err2 := doujin_arr[i].ResolvePage(u, pg)
+
+					resolve_done <- true
+					check(err2)
+				}(pg, i)
 			}
-		}(i)
+
+			// log.Println("Success")
+		}
 	}
-	log.Println("Resolve tasks were added. waiting them to be finished")
-	wg.Wait()
+
+	// log.Println("Resolve tasks were added. waiting them to be finished")
+	wg2.Wait()
 
 	log.Println("Saving to JSON")
 	SaveToJSON(doujin_arr, "all.json")
@@ -179,8 +228,8 @@ func setURLQuery(u *url.URL, query string, value string) *url.URL {
 	return new_url
 }
 
-func GetGallery(page_url string) ([]Doujin, error) {
-	resp, err := http.Get(page_url)
+func GetGallery(page_url string, client http.Client) ([]Doujin, error) {
+	resp, err := client.Get(page_url)
 
 	if err != nil {
 		return nil, err
@@ -209,13 +258,14 @@ func GetGallery(page_url string) ([]Doujin, error) {
 			Title: name,
 			Url:   str,
 			Thumb: img,
+			Pages: make(map[int]Page),
 		}
 
-		log.Printf("Title - %s\nURL - %s\nThumb - %s\n\n", name, str, img)
+		// log.Printf("Title - %s\nURL - %s\nThumb - %s\n\n", name, str, img)
 		if strings.TrimSpace(name) == "" || strings.TrimSpace(str) == "" || strings.TrimSpace(img) == "" {
 			return
 		}
-		log.Println(img)
+		// log.Println(img)
 
 		doujin_arr = append(doujin_arr, d)
 	})

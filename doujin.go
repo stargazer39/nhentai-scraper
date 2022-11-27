@@ -10,7 +10,6 @@ import (
 	"sync"
 
 	"github.com/PuerkitoBio/goquery"
-	"github.com/remeh/sizedwaitgroup"
 )
 
 type Doujin struct {
@@ -18,11 +17,11 @@ type Doujin struct {
 	Url        string              `json:"url" bson:"url"`
 	Thumb      string              `json:"thumb" bson:"thumb"`
 	TotalPages int                 `json:"total" bson:"total"`
-	Pages      []Page              `json:"pages" bson:"pages"`
+	Pages      map[int]Page        `json:"pages" bson:"pages"`
 	Tags       map[string][]string `json:"tags" bson:"tags"`
-	done_pages int
-	mutex      sync.Mutex
 	err        bool
+	mutex      sync.Mutex
+	client     http.Client
 }
 
 type Page struct {
@@ -38,66 +37,42 @@ type TaskProgress struct {
 	Total    int
 }
 
-func (doujin *Doujin) ResolvePages(base_url *url.URL, wg *sizedwaitgroup.SizedWaitGroup, progress chan TaskProgress, task_id int) error {
-	for i := 1; i <= doujin.TotalPages; i++ {
-		page_url, err := GetDoujinPageURL(base_url, doujin.Url, i)
+func (doujin *Doujin) ResolvePage(base_url *url.URL, page int) error {
+	page++
 
-		if err != nil {
-			check(err)
-		}
+	page_url, err := GetDoujinPageURL(base_url, doujin.Url, page)
 
-		page_path := page_url.String()
-
-		wg.Add()
-		go func(page_path string, page int) error {
-			defer func() {
-				doujin.mutex.Lock()
-				doujin.done_pages++
-
-				finished := doujin.done_pages == doujin.TotalPages
-
-				tp := TaskProgress{
-					Done:     doujin.done_pages,
-					ID:       task_id,
-					Finished: finished,
-					Total:    doujin.TotalPages,
-				}
-
-				if finished {
-					tp.Final = *doujin
-				}
-
-				progress <- tp
-				doujin.mutex.Unlock()
-				wg.Done()
-			}()
-
-			resp, err := http.Get(page_path)
-
-			if err != nil {
-				return err
-			}
-
-			doc, err := goquery.NewDocumentFromReader(resp.Body)
-
-			if err != nil {
-				return err
-			}
-
-			image := doc.Find("#image-container img").First().AttrOr("src", "not found")
-
-			doujin.mutex.Lock()
-			doujin.Pages = append(doujin.Pages, Page{
-				Number: page,
-				URL:    image,
-			})
-
-			// log.Println(image)
-			doujin.mutex.Unlock()
-			return nil
-		}(page_path, i)
+	if err != nil {
+		check(err)
 	}
+
+	page_path := page_url.String()
+
+	resp, err := doujin.client.Get(page_path)
+
+	if err != nil {
+		return err
+	}
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+
+	if err != nil {
+		return err
+	}
+
+	image := doc.Find("#image-container img").First().AttrOr("src", NOT_FOUND)
+
+	doujin.mutex.Lock()
+	doujin.Pages[page] = Page{
+		Number: page,
+		URL:    image,
+	}
+	doujin.mutex.Unlock()
 	return nil
+}
+
+func PageResolveTask(page_path string, page int) {
+
 }
 
 func (doujin *Doujin) ResolveDoujinDetails(base_url *url.URL) error {
@@ -108,7 +83,7 @@ func (doujin *Doujin) ResolveDoujinDetails(base_url *url.URL) error {
 
 	page_path := page_url.String()
 
-	resp, err := http.Get(page_path)
+	resp, err := doujin.client.Get(page_path)
 
 	if err != nil {
 		return err

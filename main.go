@@ -156,7 +156,7 @@ func main() {
 			log.Println(err)
 			doujin_arr[i].err = true
 			log.Printf("Skipping %s due to error %v", doujin_arr[i].Title, err)
-			return
+			continue
 		} else {
 			resolve_done := make(chan bool)
 

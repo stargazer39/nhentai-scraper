@@ -74,6 +74,22 @@ func main() {
 
 	t := make(chan bool, 2)
 
+	// GEt all in the collection
+	opts := options.Find().SetProjection(bson.D{{Key: "url", Value: 1}})
+	cur, err := doujin_collection.Find(context.TODO(), bson.M{}, opts)
+
+	check(err)
+
+	var doujin_arr []Doujin
+	doujin_map := make(map[string]int)
+	err3 := cur.All(context.TODO(), &doujin_arr)
+
+	check(err3)
+
+	for _, d := range doujin_arr {
+		doujin_map[d.Url] = 1
+	}
+
 	for i := *start; i <= *stop; i++ {
 		new_url := setURLQuery(u, "page", fmt.Sprint(i))
 		page_url := new_url.String()
@@ -94,6 +110,12 @@ func main() {
 			}
 
 			for _, r := range doujins {
+
+				if _, ok := doujin_map[r.Url]; ok {
+					log.Printf("Title %s already exists. - Cache", r.Title)
+					continue
+				}
+
 				count, err := doujin_collection.CountDocuments(context.TODO(), bson.D{{Key: "title", Value: r.Title}, {Key: "url", Value: r.Url}})
 
 				check(err)

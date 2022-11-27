@@ -20,8 +20,8 @@ type Doujin struct {
 	Pages      map[int]Page        `json:"pages" bson:"pages"`
 	Tags       map[string][]string `json:"tags" bson:"tags"`
 	err        bool
-	mutex      sync.Mutex
-	client     http.Client
+	mutex      *sync.Mutex
+	client     *HTTPClient
 }
 
 type Page struct {
@@ -37,6 +37,15 @@ type TaskProgress struct {
 	Total    int
 }
 
+func NewDoujin(title string, url string, thumb string) *Doujin {
+	return &Doujin{
+		Title: title,
+		Url:   url,
+		Thumb: thumb,
+		mutex: &sync.Mutex{},
+	}
+}
+
 func (doujin *Doujin) ResolvePage(base_url *url.URL, page int) error {
 	page++
 
@@ -48,7 +57,7 @@ func (doujin *Doujin) ResolvePage(base_url *url.URL, page int) error {
 
 	page_path := page_url.String()
 
-	resp, err := doujin.client.Get(page_path)
+	resp, err := doujin.client.Get(page_path, http.StatusOK)
 
 	if err != nil {
 		return err
@@ -83,7 +92,7 @@ func (doujin *Doujin) ResolveDoujinDetails(base_url *url.URL) error {
 
 	page_path := page_url.String()
 
-	resp, err := doujin.client.Get(page_path)
+	resp, err := doujin.client.Get(page_path, http.StatusOK)
 
 	if err != nil {
 		return err

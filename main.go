@@ -58,60 +58,40 @@ func main() {
 		check(err4)
 	}
 
-	doujin_arr := []Doujin{}
-	doujin_mutex := sync.Mutex{}
-
 	u, _ := url.Parse(HOME)
 
-	p1 := make(chan Progress)
+	http_client := NewHTTPClient(
+		&http.Client{
+			Timeout: 240 * time.Second,
+		},
+	)
 
-	// Progress
-	go func() {
-		done := float32(0)
+	wg2 := sizedwaitgroup.New(total_threads)
+	total := 0
 
-		for {
-			p := <-p1
+	progress_page := NewProgressWatcher("Pages")
+	progress_page.SetTotal(float32(*stop - *start))
 
-			if p.Reset {
-				done = 0
-				continue
-			}
-
-			done++
-
-			// MoveToBeginning()
-
-			log.Printf("%f/%f Progress", done, p.Total)
-			if p.End {
-				break
-			}
-		}
-	}()
-
-	wg := sizedwaitgroup.New(total_threads)
-	http_client := http.Client{
-		Timeout: 120 * time.Second,
-	}
+	t := make(chan bool, 2)
 
 	for i := *start; i <= *stop; i++ {
 		new_url := setURLQuery(u, "page", fmt.Sprint(i))
 		page_url := new_url.String()
 
-		wg.Add()
+		// log.Println("done1")
+		t <- true
+		// log.Println("done2")
 		go func(page_url string) {
-			defer wg.Done()
+			defer func() {
+				<-t
+			}()
 
 			doujins, err := GetGallery(page_url, http_client)
 
 			if err != nil {
-				p1 <- Progress{
-					Info:  fmt.Sprintf("Getting %s failed. %v\n", page_url, err),
-					Total: float32(*stop),
-				}
+				log.Printf("Getting %s failed. %v\n", page_url, err)
 				return
 			}
-
-			doujin_mutex.Lock()
 
 			for _, r := range doujins {
 				count, err := doujin_collection.CountDocuments(context.TODO(), bson.D{{Key: "title", Value: r.Title}, {Key: "url", Value: r.Url}})
@@ -122,95 +102,70 @@ func main() {
 					log.Printf("Title %s already exists", r.Title)
 					continue
 				}
-				doujin_arr = append(doujin_arr, r)
-			}
 
-			// doujin_arr = append(doujin_arr, doujins...)
-			doujin_mutex.Unlock()
+				err2 := r.ResolveDoujinDetails(u)
+				// log.Println("resolve")
+				if err2 != nil {
+					log.Println(err2)
+					r.err = true
+					log.Printf("Skipping %s due to error %v", r.Title, err)
+					continue
+				} else {
+					resolve_done := make(chan bool)
 
-			p1 <- Progress{
-				Current: -1,
-				Total:   float32(*stop),
-			}
-		}(page_url)
-	}
+					go func(r Doujin) {
+						co := 0
 
-	wg.Wait()
+						for r.TotalPages != co {
+							// Prog
+							<-resolve_done
+							co++
+						}
 
-	log.Println("Starting to resolve doujin details")
+						for _, value := range r.Pages {
+							if value.URL == NOT_FOUND {
+								log.Println("NOT_FOUND")
+								return
+							}
+						}
 
-	// MoveDown(1)
+						if len(r.Pages) != r.TotalPages {
+							log.Println("NOT_EQUAL_PAGES")
+							return
+						}
 
-	p1 <- Progress{
-		Reset: true,
-	}
+						_, err := doujin_collection.InsertOne(context.TODO(), r)
 
-	wg2 := sizedwaitgroup.New(total_threads)
+						log.Printf("Added %s\n", r.Title)
+						check(err)
+					}(r)
 
-	total := len(doujin_arr)
+					total += r.TotalPages
+					for pg := 0; pg < r.TotalPages; pg++ {
+						wg2.Add()
+						go func(pg int, r Doujin) {
+							defer wg2.Done()
 
-	for i := range doujin_arr {
-		err := doujin_arr[i].ResolveDoujinDetails(u)
-		// log.Println("resolve")
-		if err != nil {
-			log.Println(err)
-			doujin_arr[i].err = true
-			log.Printf("Skipping %s due to error %v", doujin_arr[i].Title, err)
-			continue
-		} else {
-			resolve_done := make(chan bool)
+							// log.Println("resolve page")
+							err2 := r.ResolvePage(u, pg)
 
-			go func(i int) {
-				co := 0
-
-				for doujin_arr[i].TotalPages != co {
-					<-resolve_done
-					co++
-				}
-
-				for _, value := range doujin_arr[i].Pages {
-					if value.URL == NOT_FOUND {
-						log.Println("NOT_FOUND")
-						return
+							resolve_done <- true
+							check(err2)
+						}(pg, r)
 					}
+					// log.Println("Success")
 				}
 
-				if len(doujin_arr[i].Pages) != doujin_arr[i].TotalPages {
-					log.Println("NOT_EQUAL_PAGES")
-					return
-				}
-
-				_, err := doujin_collection.InsertOne(context.TODO(), doujin_arr[i])
-
-				check(err)
-
-				p1 <- Progress{
-					Total: float32(total),
-				}
-			}(i)
-
-			for pg := 0; pg < doujin_arr[i].TotalPages; pg++ {
-				wg2.Add()
-				go func(pg int, i int) {
-					defer wg2.Done()
-
-					// log.Println("resolve page")
-					err2 := doujin_arr[i].ResolvePage(u, pg)
-
-					resolve_done <- true
-					check(err2)
-				}(pg, i)
 			}
 
-			// log.Println("Success")
-		}
+		}(page_url)
+		progress_page.SetCurrentFunc(func(current float32) float32 {
+			return current + 1
+		})
 	}
 
-	// log.Println("Resolve tasks were added. waiting them to be finished")
 	wg2.Wait()
-
-	log.Println("Saving to JSON")
-	SaveToJSON(doujin_arr, "all.json")
+	log.Println("Starting to resolve doujin details")
 }
 
 func check(err error) {
@@ -228,8 +183,8 @@ func setURLQuery(u *url.URL, query string, value string) *url.URL {
 	return new_url
 }
 
-func GetGallery(page_url string, client http.Client) ([]Doujin, error) {
-	resp, err := client.Get(page_url)
+func GetGallery(page_url string, client *HTTPClient) ([]Doujin, error) {
+	resp, err := client.Get(page_url, http.StatusOK)
 
 	if err != nil {
 		return nil, err
@@ -255,10 +210,12 @@ func GetGallery(page_url string, client http.Client) ([]Doujin, error) {
 		img, _ := s.Find("img").Attr("data-src")
 
 		d := Doujin{
-			Title: name,
-			Url:   str,
-			Thumb: img,
-			Pages: make(map[int]Page),
+			Title:  name,
+			Url:    str,
+			Thumb:  img,
+			Pages:  make(map[int]Page),
+			mutex:  &sync.Mutex{},
+			client: client,
 		}
 
 		// log.Printf("Title - %s\nURL - %s\nThumb - %s\n\n", name, str, img)

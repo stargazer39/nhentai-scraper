@@ -72,7 +72,7 @@ func main() {
 	progress_page := NewProgressWatcher("Pages")
 	progress_page.SetTotal(float32(*stop - *start))
 
-	t := make(chan bool, 2)
+	t := make(chan bool, 12)
 
 	// GEt all in the collection
 	opts := options.Find().SetProjection(bson.D{{Key: "url", Value: 1}})

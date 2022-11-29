@@ -10,10 +10,10 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
+	"github.com/joho/godotenv"
 	"github.com/remeh/sizedwaitgroup"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -27,6 +27,8 @@ func main() {
 	threads := flag.Int("t", 12, "Threads")
 	flag.Parse()
 
+	godotenv.Load()
+
 	total_threads := *threads
 
 	// Initialize termbox
@@ -35,7 +37,9 @@ func main() {
 	// Connect to database
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	client, err := mongo.Connect(ctx, options.Client().ApplyURI("mongodb+srv://stargazer-2:0wdyOv85cDtSoUwC@cluster0.y9yur.mongodb.net/?retryWrites=true&w=majority"))
+
+	log.Println("Mongo", os.Getenv("MONGO_URI"))
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(os.Getenv("MONGO_URI")))
 
 	check(err)
 
@@ -45,15 +49,14 @@ func main() {
 		}
 	}()
 
-	db := client.Database("testing")
-	doujin_collection := db.Collection("doujin")
+	SetDBInstance(client)
 
 	indexModel := mongo.IndexModel{
 		Keys:    bson.D{{Key: "title", Value: -1}, {Key: "url", Value: -1}},
 		Options: options.Index().SetUnique(true),
 	}
 
-	_, err4 := doujin_collection.Indexes().CreateOne(context.TODO(), indexModel)
+	_, err4 := GetDBInstance().Collection("doujin").Indexes().CreateOne(context.TODO(), indexModel)
 	if err4 != nil {
 		check(err4)
 	}
@@ -72,23 +75,7 @@ func main() {
 	progress_page := NewProgressWatcher("Pages")
 	progress_page.SetTotal(float32(*stop - *start))
 
-	t := make(chan bool, 12)
-
-	// GEt all in the collection
-	opts := options.Find().SetProjection(bson.D{{Key: "url", Value: 1}})
-	cur, err := doujin_collection.Find(context.TODO(), bson.M{}, opts)
-
-	check(err)
-
-	var doujin_arr []Doujin
-	doujin_map := make(map[string]int)
-	err3 := cur.All(context.TODO(), &doujin_arr)
-
-	check(err3)
-
-	for _, d := range doujin_arr {
-		doujin_map[d.Url] = 1
-	}
+	t := make(chan bool, 1)
 
 	for i := *start; i <= *stop; i++ {
 		new_url := setURLQuery(u, "page", fmt.Sprint(i))
@@ -111,17 +98,8 @@ func main() {
 
 			for _, r := range doujins {
 
-				if _, ok := doujin_map[r.Url]; ok {
+				if ok, _ := DoujinExists(context.TODO(), r.Title, r.URL); ok {
 					log.Printf("Title %s already exists. - Cache", r.Title)
-					continue
-				}
-
-				count, err := doujin_collection.CountDocuments(context.TODO(), bson.D{{Key: "title", Value: r.Title}, {Key: "url", Value: r.Url}})
-
-				check(err)
-
-				if count > 0 {
-					log.Printf("Title %s already exists", r.Title)
 					continue
 				}
 
@@ -144,7 +122,7 @@ func main() {
 							co++
 						}
 
-						for _, value := range r.Pages {
+						/* for _, value := range r.Pages {
 							if value.URL == NOT_FOUND {
 								log.Println("NOT_FOUND")
 								return
@@ -154,12 +132,48 @@ func main() {
 						if len(r.Pages) != r.TotalPages {
 							log.Println("NOT_EQUAL_PAGES")
 							return
+						} */
+
+						/* for _, pp := range r.page_map {
+							log.Println(pp)
+						} */
+						log.Println(r.ID, r.Title, r.URL)
+
+						callback := func(sessCtx mongo.SessionContext) (interface{}, error) {
+
+							err := InsertToDoujinCollection(&r, sessCtx)
+
+							if err != nil {
+								return nil, err
+							}
+							var pages []Page
+
+							for _, p := range r.page_map {
+								pages = append(pages, p)
+							}
+							err, id_arr := InsertManyDoujinPages(r.ID, &pages, sessCtx)
+
+							if err != nil {
+								return nil, err
+							}
+							err2 := UpdateDoujin(r.ID, sessCtx, bson.D{{Key: "$set", Value: bson.D{{Key: "pages", Value: id_arr}}}})
+
+							if err2 != nil {
+								return nil, err2
+							}
+							return nil, nil
 						}
 
-						_, err := doujin_collection.InsertOne(context.TODO(), r)
+						session, err := client.StartSession()
+						check(err)
+
+						defer session.EndSession(context.TODO())
+
+						_, err3 := session.WithTransaction(context.TODO(), callback)
+
+						check(err3)
 
 						log.Printf("Added %s\n", r.Title)
-						check(err)
 					}(r)
 
 					total += r.TotalPages
@@ -227,24 +241,29 @@ func GetGallery(page_url string, client *HTTPClient) ([]Doujin, error) {
 	}
 
 	doc.Find(".gallery").Each(func(j int, s *goquery.Selection) {
-		str, _ := s.Find("a").Attr("href")
+		doujin_url, _ := s.Find("a").Attr("href")
 		name := s.Find(".caption").Text()
 		img, _ := s.Find("img").Attr("data-src")
 
-		d := Doujin{
-			Title:  name,
-			Url:    str,
-			Thumb:  img,
-			Pages:  make(map[int]Page),
-			mutex:  &sync.Mutex{},
-			client: client,
-		}
-
-		// log.Printf("Title - %s\nURL - %s\nThumb - %s\n\n", name, str, img)
-		if strings.TrimSpace(name) == "" || strings.TrimSpace(str) == "" || strings.TrimSpace(img) == "" {
+		// Check name
+		if len(strings.TrimSpace(name)) == 0 {
+			log.Println("Name is Empty")
 			return
 		}
-		// log.Println(img)
+
+		// Check thumbnail
+		if _, err := url.Parse(img); err != nil {
+			log.Printf("Thumb is Empty\n%v", err)
+			return
+		}
+
+		// Check url
+		if _, err := url.Parse(doujin_url); err != nil {
+			log.Printf("Thumb is Empty\n%v", err)
+			return
+		}
+
+		d := *NewDoujin(name, doujin_url, img, client)
 
 		doujin_arr = append(doujin_arr, d)
 	})

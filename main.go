@@ -76,7 +76,7 @@ func main() {
 		doujins, err := GetGallery(SetURLQuery(home_url, "page", fmt.Sprint(page)).String(), http_client)
 
 		check(err)
-		log.Printf("Page %d \n", page)
+		// log.Printf("Page %d \n", page)
 
 		if len(doujins) == 0 {
 			break
@@ -86,10 +86,10 @@ func main() {
 			wg.Add()
 			go func(p Doujin) {
 				defer wg.Done()
-				log.Println(p.Title)
+				// log.Println(p.Title)
 
 				page_url, err := GetDoujinPageURL(home_url, doujin.URL, 1)
-				log.Println(page_url)
+				// log.Println(page_url)
 				if err != nil {
 					check(err)
 				}
@@ -136,17 +136,18 @@ func main() {
 				output = append(output, data)
 
 				vm_mutex.Unlock()
-				log.Printf("Done %s\n", p.Title)
+				// log.Printf("Done %s\n", p.Title)
 			}(doujin)
 		}
 
 		page++
+		log.Printf("\n\n\nDone %d, Current Total %d \n\n\n", page, len(output))
 	}
 
 	wg.Wait()
 
 	SaveToJSON(output, "result.json")
-	log.Printf("\nSaved %d doujins\n", len(output))
+	log.Printf("\nSaved %d doujins. Total %d\n", len(output), len(output))
 }
 
 func check(err error) {

@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
+	"os"
 )
 
 func GetDoujinPageURL(base_url *url.URL, doujin_url string, page_number int) (*url.URL, error) {
@@ -35,4 +37,27 @@ func GetURLFromTag(base_url *url.URL, tag string) (*url.URL, error) {
 	base_copy.Path = page_path
 
 	return &base_copy, nil
+}
+
+func SaveToJSON(a any, file string) {
+	bytes, err := json.MarshalIndent(a, "", "    ")
+
+	check(err)
+
+	f, err := os.Create(file)
+	check(err)
+	defer f.Close()
+
+	_, errf := f.Write(bytes)
+
+	check(errf)
+}
+
+func SetURLQuery(u *url.URL, query string, value string) *url.URL {
+	q := u.Query()
+	q.Set(query, value)
+
+	new_url, _ := url.Parse(u.String())
+	new_url.RawQuery = q.Encode()
+	return new_url
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/remeh/sizedwaitgroup"
 	"github.com/robertkrimen/otto"
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -26,7 +27,7 @@ import (
 func main() {
 	log.Println("Starting the scraper")
 	start := flag.Int("start", 1, "Starting page")
-	stop := flag.Int("stop", 2, "Stop page")
+	stop := flag.Int("stop", -1, "Stop page")
 	threads := flag.Int("t", 12, "Threads")
 	flag.Parse()
 
@@ -51,20 +52,31 @@ func main() {
 
 	SetDBInstance(client)
 
+	indexModel := mongo.IndexModel{
+		Keys:    bson.D{{Key: "gallery.id", Value: -1}},
+		Options: options.Index().SetUnique(true),
+	}
+
+	_, err4 := GetDBInstance().Collection("doujin").Indexes().CreateOne(context.TODO(), indexModel)
+	if err4 != nil {
+		check(err4)
+	}
+
 	home_url, _ := url.Parse(HOME)
 
 	http_client := NewHTTPClient(
 		&http.Client{
-			Timeout: 240 * time.Second,
+			Timeout: 2 * time.Second,
 		},
 	)
 
+	log.Printf("Starting with %d threads\n", total_threads)
 	wg := sizedwaitgroup.New(total_threads)
 
 	progress_page := NewProgressWatcher("Pages")
 	progress_page.SetTotal(float32(*stop - *start))
 
-	page := 1
+	page := *start
 	find_n_data, err := regexp.Compile(`N\.reader\([\s\S]*?(}\);)`)
 	jsvm := otto.New()
 	var vm_mutex sync.Mutex
@@ -88,7 +100,7 @@ func main() {
 				defer wg.Done()
 				// log.Println(p.Title)
 
-				page_url, err := GetDoujinPageURL(home_url, doujin.URL, 1)
+				page_url, err := GetDoujinPageURL(home_url, p.URL, 1)
 				// log.Println(page_url)
 				if err != nil {
 					check(err)
@@ -136,10 +148,26 @@ func main() {
 				output = append(output, data)
 
 				vm_mutex.Unlock()
+
+				derr := InsertToDoujinCollection(&data, context.TODO())
+
+				if we, ok := derr.(mongo.WriteException); ok {
+					for _, e := range we.WriteErrors {
+						if e.Code == 11000 {
+							log.Printf("Dulicate %s \n", data.Gallery.Title.English)
+							return
+						}
+					}
+				}
+
+				check(derr)
 				// log.Printf("Done %s\n", p.Title)
 			}(doujin)
 		}
 
+		if *stop == page {
+			break
+		}
 		page++
 		log.Printf("\n\n\nDone %d, Current Total %d \n\n\n", page, len(output))
 	}

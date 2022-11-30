@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"net/http"
 	"time"
 )
@@ -28,10 +29,12 @@ func (h *HTTPClient) Get(url string, expect int) (*http.Response, error) {
 		resp, err := h.client.Get(url)
 
 		if err != nil {
+			log.Println("Retry", err)
 			continue
 		}
 
 		if resp.StatusCode != expect {
+			log.Println("Retry", resp.Status)
 			continue
 		}
 

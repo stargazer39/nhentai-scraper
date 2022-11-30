@@ -31,7 +31,7 @@ func SetDBInstance(instance *mongo.Client) {
 	mongo_client = instance
 }
 
-func InsertToDoujinCollection(doujin *Doujin, ctx context.Context) error {
+func InsertToDoujinCollection(doujin *DoujinV2, ctx context.Context) error {
 	if disable {
 		return nil
 	}

@@ -96,6 +96,8 @@ func main() {
 		for _, doujin := range doujins {
 			wg.Add()
 			go func(p Doujin) {
+				t1 := time.Now()
+
 				defer wg.Done()
 				// log.Println(p.Title)
 
@@ -152,6 +154,9 @@ func main() {
 				}
 
 				check(derr)
+				du := time.Since(t1)
+
+				log.Printf("Took %s\n", du.String())
 				// log.Printf("Done %s\n", p.Title)
 			}(doujin)
 		}

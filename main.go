@@ -35,6 +35,7 @@ func main() {
 	port := flag.String("p", ":4040", "Set Port")
 
 	flag.Parse()
+	client_uris := flag.Args()
 
 	godotenv.Load()
 
@@ -96,18 +97,10 @@ func main() {
 		}
 	}
 
-	// Prepare client array
-	clients := []string{
-		"localhost:4041",
-		"localhost:4042",
-		"localhost:4043",
-		"localhost:4044",
-	}
-
 	var rpc_arr []*rpc.Client
 
 	if !*mode {
-		for _, client := range clients {
+		for _, client := range client_uris {
 			c, err := rpc.DialHTTP("tcp", client)
 			if err != nil {
 				log.Println("dialing:", err)
@@ -115,6 +108,10 @@ func main() {
 			}
 
 			rpc_arr = append(rpc_arr, c)
+		}
+
+		if len(rpc_arr) == 0 {
+			log.Panicln("No RPC clients are available")
 		}
 
 		curr_client := 0

@@ -52,6 +52,5 @@ func (rh *DoujinHandler) ResolveDoujin(d *Doujin, reply *string) error {
 	s := "SUCCESS"
 	reply = &s
 
-	// add logic to return users
 	return nil
 }

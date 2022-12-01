@@ -68,10 +68,10 @@ func UpdateDoujin(doujin_id primitive.ObjectID, ctx context.Context, update inte
 	return nil
 }
 
-func FindDoujin(ctx context.Context, filter interface{}, opts *options.FindOptions) (*[]Doujin, error) {
-	var DoujinArr []Doujin
+func FindDoujin(ctx context.Context, filter interface{}, opts ...*options.FindOptions) (*[]DoujinV2, error) {
+	var DoujinArr []DoujinV2
 
-	cur, err := GetDBInstance().Collection("doujin").Find(ctx, filter, opts)
+	cur, err := GetDBInstance().Collection("doujin").Find(ctx, filter, opts...)
 
 	if err != nil {
 		return nil, err
@@ -89,7 +89,7 @@ func DoujinExists(ctx context.Context, title string, url string) (bool, error) {
 	return count > 0, err
 }
 
-func InitCache(ctx context.Context) {
+/* func InitCache(ctx context.Context) {
 	// Get all in the collection
 	opts := options.Find().SetProjection(bson.D{{Key: "pages", Value: 0}, {Key: "tags", Value: 0}})
 	all, err := FindDoujin(context.TODO(), bson.M{}, opts)
@@ -100,3 +100,4 @@ func InitCache(ctx context.Context) {
 		doujin_cache_map[d.URL] = &d
 	}
 }
+*/

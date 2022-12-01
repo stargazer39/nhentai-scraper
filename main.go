@@ -31,7 +31,7 @@ func main() {
 	start := flag.Int("start", 1, "Starting page")
 	stop := flag.Int("stop", -1, "Stop page")
 	threads := flag.Int("t", 12, "Threads")
-	mode := flag.Bool("client", false, "Set to client mode")
+	mode := flag.String("mode", "client", "Set to client mode")
 	port := flag.String("p", ":4040", "Set Port")
 
 	flag.Parse()
@@ -73,9 +73,6 @@ func main() {
 	log.Printf("Starting with %d threads\n", total_threads)
 	wg := sizedwaitgroup.New(total_threads)
 
-	progress_page := NewProgressWatcher("Pages")
-	progress_page.SetTotal(float32(*stop - *start))
-
 	page := *start
 
 	jsvm := otto.New()
@@ -84,7 +81,7 @@ func main() {
 
 	check(err)
 
-	if *mode {
+	if *mode == "client" {
 		// Start the client
 		handler := NewDoujinHandler(HOME_URL, HTTP_CLIENT, &vm_mutex, jsvm)
 		rpc.Register(handler)
@@ -99,7 +96,7 @@ func main() {
 
 	var rpc_arr []*rpc.Client
 
-	if !*mode {
+	if *mode == "scraper" {
 		for _, client := range client_uris {
 			c, err := rpc.DialHTTP("tcp", client)
 			if err != nil {
@@ -164,6 +161,15 @@ func main() {
 
 		SaveToJSON(output, "result.json")
 		log.Printf("\nSaved %d doujins. Total %d\n", len(output), len(output))
+	}
+
+	if *mode == "images" {
+		// i, _ := primitive.ObjectIDFromHex("6387c227472b92ef6b30cb24")
+		doujin, err := FindDoujin(context.TODO(), bson.D{})
+
+		check(err)
+
+		log.Println("d", doujin)
 	}
 }
 

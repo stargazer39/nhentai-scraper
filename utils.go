@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 func GetDoujinPageURL(base_url *url.URL, doujin_url string, page_number int) (*url.URL, error) {
@@ -60,4 +62,16 @@ func SetURLQuery(u *url.URL, query string, value string) *url.URL {
 	new_url, _ := url.Parse(u.String())
 	new_url.RawQuery = q.Encode()
 	return new_url
+}
+
+func IsCode(err error, code int) bool {
+	if we, ok := err.(mongo.WriteException); ok {
+		for _, e := range we.WriteErrors {
+			if e.Code == code {
+				return true
+			}
+		}
+	}
+
+	return false
 }

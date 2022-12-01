@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -108,15 +107,11 @@ func main() {
 
 				page_path := page_url.String()
 
-				resp, err := http_client.Get(page_path, http.StatusOK)
+				bytes, err := http_client.GetBytes(page_path, http.StatusOK)
 
 				if err != nil {
 					check(err)
 				}
-
-				bytes, berr := io.ReadAll(resp.Body)
-
-				check(berr)
 
 				if len(bytes) == 0 {
 					log.Panicln("No match")
@@ -151,13 +146,9 @@ func main() {
 
 				derr := InsertToDoujinCollection(&data, context.TODO())
 
-				if we, ok := derr.(mongo.WriteException); ok {
-					for _, e := range we.WriteErrors {
-						if e.Code == 11000 {
-							log.Printf("Dulicate %s \n", data.Gallery.Title.English)
-							return
-						}
-					}
+				if IsCode(derr, 11000) {
+					log.Printf("Dulicate %s \n", data.Gallery.Title.English)
+					return
 				}
 
 				check(derr)

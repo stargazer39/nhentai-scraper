@@ -77,7 +77,7 @@ func FindDoujin(ctx context.Context, filter interface{}, opts ...*options.FindOp
 		return nil, err
 	}
 
-	return nil, cur.All(ctx, &DoujinArr)
+	return &DoujinArr, cur.All(ctx, &DoujinArr)
 }
 
 func DoujinExists(ctx context.Context, title string, url string) (bool, error) {
@@ -101,3 +101,27 @@ func DoujinExists(ctx context.Context, title string, url string) (bool, error) {
 	}
 }
 */
+
+func InsertToPageCollection(doujin *Page, ctx context.Context) error {
+	if disable {
+		return nil
+	}
+
+	coll := GetDBInstance().Collection("pages")
+	result, err := coll.InsertOne(ctx, *doujin)
+
+	if err != nil {
+		return err
+	}
+
+	id := result.InsertedID.(primitive.ObjectID)
+
+	doujin.ID = id
+
+	return nil
+}
+
+func PageExist(ctx context.Context, name string) (bool, error) {
+	count, err := GetDBInstance().Collection("pages").CountDocuments(ctx, bson.D{{Key: "name", Value: name}})
+	return count > 0, err
+}

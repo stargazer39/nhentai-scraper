@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
+	"io"
 	"log"
+	"net/http"
 	"net/rpc"
 	"net/url"
 	"sync"
 
+	"github.com/minio/minio-go"
 	"github.com/remeh/sizedwaitgroup"
 	"github.com/robertkrimen/otto"
 )
@@ -51,6 +55,50 @@ func (rh *DoujinHandler) ResolveDoujin(d *Doujin, reply *string) error {
 
 	s := "SUCCESS"
 	reply = &s
+
+	return nil
+}
+
+func (rh *DoujinHandler) CachePageURL(page *Page, reply *string) error {
+	if page == nil {
+		log.Println("Image is nil")
+		return nil
+	}
+
+	ok, err := PageExist(context.TODO(), page.Name)
+
+	check(err)
+
+	if ok {
+		log.Println("Page exist")
+		return nil
+	}
+
+	rh.wg.Add()
+	go func() {
+		defer rh.wg.Done()
+		resp, err := rh.http_client.Get(page.URL, http.StatusOK)
+
+		if err != nil {
+			log.Printf("Failed to add %s", page.URL)
+			return
+		}
+
+		_, err5 := GetMinioInstance().PutObject("nhentai", page.Name, io.NopCloser(resp.Body), resp.ContentLength, minio.PutObjectOptions{ContentType: resp.Header.Get("Content-type")})
+
+		if err5 != nil {
+			log.Fatalln(err5)
+			return
+		}
+
+		ierr := InsertToPageCollection(page, context.Background())
+
+		if ierr != nil {
+			log.Fatalln(ierr)
+		}
+
+		log.Println(page)
+	}()
 
 	return nil
 }

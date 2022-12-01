@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/minio/minio-go"
 	"github.com/remeh/sizedwaitgroup"
 	"github.com/robertkrimen/otto"
 	"go.mongodb.org/mongo-driver/bson"
@@ -58,13 +59,39 @@ func main() {
 
 	SetDBInstance(client)
 
+	// Initialize
+	var (
+		endpoint        = os.Getenv("MINIO_ENPOINT")
+		accessKeyID     = os.Getenv("MINIO_ACCESS_KEY_ID")
+		secretAccessKey = os.Getenv("MINIO_ENPOINT_SECRET_ACCESS_KEY")
+		useSSL          = false
+	)
+
+	// Initialize minio client object.
+	minioClient, err := minio.New(endpoint, accessKeyID, secretAccessKey, useSSL)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	SetMinioInstance(minioClient)
+
 	indexModel := mongo.IndexModel{
 		Keys:    bson.D{{Key: "gallery.id", Value: -1}},
 		Options: options.Index().SetUnique(true),
 	}
 
+	indexModelPages := mongo.IndexModel{
+		Keys:    bson.D{{Key: "name", Value: -1}},
+		Options: options.Index().SetUnique(true),
+	}
+
 	_, err4 := GetDBInstance().Collection("doujin").Indexes().CreateOne(context.TODO(), indexModel)
 	if err4 != nil {
+		check(err4)
+	}
+
+	_, err10 := GetDBInstance().Collection("pages").Indexes().CreateOne(context.TODO(), indexModelPages)
+	if err10 != nil {
 		check(err4)
 	}
 
@@ -95,6 +122,8 @@ func main() {
 	}
 
 	var rpc_arr []*rpc.Client
+	var rpc_mutex sync.Mutex
+	curr_client := 0
 
 	if *mode == "scraper" {
 		for _, client := range client_uris {
@@ -110,9 +139,6 @@ func main() {
 		if len(rpc_arr) == 0 {
 			log.Panicln("No RPC clients are available")
 		}
-
-		curr_client := 0
-		var rpc_mutex sync.Mutex
 
 		for {
 			wg.Add()
@@ -164,12 +190,58 @@ func main() {
 	}
 
 	if *mode == "images" {
+		for _, client := range client_uris {
+			c, err := rpc.DialHTTP("tcp", client)
+			if err != nil {
+				log.Println("dialing:", err)
+				continue
+			}
+
+			rpc_arr = append(rpc_arr, c)
+		}
+
+		if len(rpc_arr) == 0 {
+			log.Panicln("No RPC clients are available")
+		}
+
 		// i, _ := primitive.ObjectIDFromHex("6387c227472b92ef6b30cb24")
 		doujin, err := FindDoujin(context.TODO(), bson.D{})
 
 		check(err)
 
-		log.Println("d", doujin)
+		done := 0
+
+		for _, d := range *doujin {
+			wg.Add()
+			go func(d DoujinV2) {
+				defer wg.Done()
+
+				for ii := 0; ii < d.GetTotalPages(); ii++ {
+					// log.Println(d.GetPage(ii))
+					rpc_mutex.Lock()
+					var reply string
+					this_client := curr_client
+
+					curr_client++
+					if curr_client == len(rpc_arr) {
+						curr_client = 0
+					}
+
+					// log.Println("cr", curr_client, len(rpc_arr))
+
+					page_page := d.GetPage(ii)
+
+					err = rpc_arr[this_client].Call("DoujinHandler.CachePageURL", &page_page, &reply)
+					rpc_mutex.Unlock()
+					if err != nil {
+						log.Fatal("error:", err)
+					}
+				}
+			}(d)
+			done++
+			log.Printf("Done %d/%d\n", done, len(*doujin))
+		}
+
 	}
 }
 

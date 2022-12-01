@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -53,4 +54,41 @@ type DoujinV2 struct {
 	} `json:"gallery,omitempty" bson:"gallery,omitempty"`
 	MediaURL  string `json:"media_url,omitempty" bson:"media_url,omitempty"`
 	StartPage int    `json:"start_page,omitempty" bson:"start_page,omitempty"`
+}
+
+var Extensions = map[string]string{
+	"j": "jpg",
+	"p": "png",
+	"g": "gif",
+}
+
+type Page struct {
+	ID        primitive.ObjectID `json:"_id,omitempty" bson:"_id,omitempty"`
+	DoujinID  primitive.ObjectID `json:"did,omitempty" bson:"did,omitempty"`
+	GalleryID int                `json:"gid,omitempty" bson:"gid,omitempty"`
+	Page      int                `json:"page,omitempty" bson:"page,omitempty"`
+	URL       string             `json:"url,omitempty" bson:"url,omitempty"`
+	CachedURL string             `json:"cached,omitempty" bson:"cached,omitempty"`
+	Name      string             `json:"name,omitempty" bson:"name,omitempty"`
+}
+
+func (doujin *DoujinV2) GetPageURL(index int) string {
+	page := doujin.Gallery.Images.Pages[index]
+	return fmt.Sprintf("%sgalleries/%s/%dt.%s", doujin.MediaURL, doujin.Gallery.MediaID, index+1, Extensions[page.T])
+}
+
+func (doujin *DoujinV2) GetTotalPages() int {
+	return len(doujin.Gallery.Images.Pages)
+}
+
+func (doujin *DoujinV2) GetPage(index int) Page {
+	page := doujin.Gallery.Images.Pages[index]
+
+	return Page{
+		GalleryID: doujin.Gallery.ID,
+		Page:      index,
+		URL:       doujin.GetPageURL(index),
+		DoujinID:  doujin.ID,
+		Name:      fmt.Sprintf("%d+%dt.%s", doujin.Gallery.ID, index, Extensions[page.T]),
+	}
 }

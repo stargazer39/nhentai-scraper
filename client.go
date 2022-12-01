@@ -22,7 +22,7 @@ func (h *HTTPClient) Get(url string, expect int) (*http.Response, error) {
 
 	for {
 		if retry != 0 {
-			time.Sleep(time.Millisecond * 250)
+			time.Sleep(time.Second * 2)
 		}
 
 		retry++

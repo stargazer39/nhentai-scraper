@@ -50,50 +50,6 @@ func InsertToDoujinCollection(doujin *DoujinV2, ctx context.Context) error {
 	return nil
 }
 
-func InsertDoujinPage(doujin_id primitive.ObjectID, page *Page, ctx context.Context) error {
-	if disable {
-		return nil
-	}
-
-	coll := GetDBInstance().Collection("pages")
-	res, err := coll.InsertOne(ctx, page)
-
-	if err != nil {
-		return err
-	}
-
-	page.DoujinID = doujin_id
-	page.ID = res.InsertedID.(primitive.ObjectID)
-
-	return nil
-}
-
-func InsertManyDoujinPages(doujin_id primitive.ObjectID, pages *[]Page, ctx context.Context) (error, []primitive.ObjectID) {
-	if disable {
-		return nil, []primitive.ObjectID{}
-	}
-
-	coll := GetDBInstance().Collection("pages")
-	interfaces := []interface{}{}
-
-	for _, p := range *pages {
-		interfaces = append(interfaces, p)
-	}
-
-	res, err := coll.InsertMany(ctx, interfaces)
-
-	if err != nil {
-		return err, []primitive.ObjectID{}
-	}
-
-	var ids []primitive.ObjectID
-
-	for _, i := range res.InsertedIDs {
-		ids = append(ids, i.(primitive.ObjectID))
-	}
-
-	return nil, ids
-}
 func UpdateDoujin(doujin_id primitive.ObjectID, ctx context.Context, update interface{}) error {
 	if disable {
 		return nil

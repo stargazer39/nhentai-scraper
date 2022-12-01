@@ -2,19 +2,16 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
+	"net/rpc"
 	"net/url"
 	"os"
-	"regexp"
-	"strings"
 	"sync"
 	"time"
 
-	"github.com/PuerkitoBio/goquery"
 	"github.com/joho/godotenv"
 	"github.com/remeh/sizedwaitgroup"
 	"github.com/robertkrimen/otto"
@@ -23,11 +20,20 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
+var HTTP_CLIENT = NewHTTPClient(
+	&http.Client{
+		Timeout: 10 * time.Second,
+	},
+)
+
 func main() {
 	log.Println("Starting the scraper")
 	start := flag.Int("start", 1, "Starting page")
 	stop := flag.Int("stop", -1, "Stop page")
 	threads := flag.Int("t", 12, "Threads")
+	mode := flag.Bool("client", false, "Set to client mode")
+	port := flag.String("p", ":4040", "Set Port")
+
 	flag.Parse()
 
 	godotenv.Load()
@@ -61,13 +67,7 @@ func main() {
 		check(err4)
 	}
 
-	home_url, _ := url.Parse(HOME)
-
-	http_client := NewHTTPClient(
-		&http.Client{
-			Timeout: 2 * time.Second,
-		},
-	)
+	HOME_URL, _ := url.Parse(HOME)
 
 	log.Printf("Starting with %d threads\n", total_threads)
 	wg := sizedwaitgroup.New(total_threads)
@@ -76,158 +76,102 @@ func main() {
 	progress_page.SetTotal(float32(*stop - *start))
 
 	page := *start
-	find_n_data, err := regexp.Compile(`N\.reader\([\s\S]*?(}\);)`)
+
 	jsvm := otto.New()
 	var vm_mutex sync.Mutex
 	output := []DoujinV2{}
 
 	check(err)
-	for {
 
-		doujins, err := GetGallery(SetURLQuery(home_url, "page", fmt.Sprint(page)).String(), http_client)
+	if *mode {
+		// Start the client
+		handler := NewDoujinHandler(HOME_URL, HTTP_CLIENT, &vm_mutex, jsvm)
+		rpc.Register(handler)
+		rpc.HandleHTTP()
 
-		check(err)
-		// log.Printf("Page %d \n", page)
+		log.Printf("Listening RPC on %s\n", *port)
+		err := http.ListenAndServe(*port, nil)
+		if err != nil {
+			fmt.Println(err.Error())
+		}
+	}
 
-		if len(doujins) == 0 {
-			break
+	// Prepare client array
+	clients := []string{
+		"localhost:4041",
+		"localhost:4042",
+		"localhost:4043",
+		"localhost:4044",
+	}
+
+	var rpc_arr []*rpc.Client
+
+	if !*mode {
+		for _, client := range clients {
+			c, err := rpc.DialHTTP("tcp", client)
+			if err != nil {
+				log.Println("dialing:", err)
+				continue
+			}
+
+			rpc_arr = append(rpc_arr, c)
 		}
 
-		for _, doujin := range doujins {
+		curr_client := 0
+		var rpc_mutex sync.Mutex
+
+		for {
 			wg.Add()
-			go func(p Doujin) {
-				t1 := time.Now()
-
+			go func(page int) {
 				defer wg.Done()
-				// log.Println(p.Title)
 
-				page_url, err := GetDoujinPageURL(home_url, p.URL, 1)
-				// log.Println(page_url)
-				if err != nil {
-					check(err)
-				}
-
-				page_path := page_url.String()
-
-				bytes, err := http_client.GetBytes(page_path, http.StatusOK)
-
-				if err != nil {
-					check(err)
-				}
-
-				if len(bytes) == 0 {
-					log.Panicln("No match")
-				}
-
-				match := find_n_data.Find(bytes)
-
-				if len(match) == 0 {
-					log.Panicln("Length 0")
-				}
-
-				jstr := string(match)
-
-				vm_mutex.Lock()
-
-				result, err4 := jsvm.Run(`result = ` + jstr[9:len(jstr)-2])
-
-				check(err4)
-
-				json_bytes, err := result.MarshalJSON()
+				doujins, err := GetGallery(SetURLQuery(HOME_URL, "page", fmt.Sprint(page)).String(), HTTP_CLIENT)
 
 				check(err)
-
-				var data DoujinV2
-
-				err5 := json.Unmarshal(json_bytes, &data)
-				check(err5)
-
-				output = append(output, data)
-
-				vm_mutex.Unlock()
-
-				derr := InsertToDoujinCollection(&data, context.TODO())
-
-				if IsCode(derr, 11000) {
-					log.Printf("Dulicate %s \n", data.Gallery.Title.English)
+				// log.Printf("Page %d \n", page)
+				if len(doujins) == 0 {
 					return
 				}
 
-				check(derr)
-				du := time.Since(t1)
+				for _, doujin := range doujins {
+					var reply string
+					var this_client int
 
-				log.Printf("Took %s\n", du.String())
-				// log.Printf("Done %s\n", p.Title)
-			}(doujin)
+					rpc_mutex.Lock()
+					this_client = curr_client
+
+					curr_client++
+					if curr_client == len(rpc_arr) {
+						curr_client = 0
+					}
+
+					rpc_mutex.Unlock()
+
+					err = rpc_arr[this_client].Call("DoujinHandler.ResolveDoujin", &doujin, &reply)
+					if err != nil {
+						log.Fatal("error:", err)
+					}
+
+					// log.Printf("reply %d %s ", this_client, reply)
+				}
+			}(page)
+
+			if *stop == page {
+				break
+			}
+			page++
+			log.Printf("\n\n\nDone %d, Current Total %d \n\n\n", page, len(output))
 		}
 
-		if *stop == page {
-			break
-		}
-		page++
-		log.Printf("\n\n\nDone %d, Current Total %d \n\n\n", page, len(output))
+		wg.Wait()
+
+		SaveToJSON(output, "result.json")
+		log.Printf("\nSaved %d doujins. Total %d\n", len(output), len(output))
 	}
-
-	wg.Wait()
-
-	SaveToJSON(output, "result.json")
-	log.Printf("\nSaved %d doujins. Total %d\n", len(output), len(output))
 }
 
 func check(err error) {
 	if err != nil {
 		log.Panicln(err)
 	}
-}
-
-func GetGallery(page_url string, client *HTTPClient) ([]Doujin, error) {
-	resp, err := client.Get(page_url, http.StatusOK)
-
-	if err != nil {
-		return nil, err
-	}
-
-	defer resp.Body.Close()
-
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
-
-	if err != nil {
-		return nil, err
-	}
-
-	var doujin_arr []Doujin
-
-	if doc.Find(".gallery").Length() == 0 {
-		return nil, fmt.Errorf("no galleries in this page")
-	}
-
-	doc.Find(".gallery").Each(func(j int, s *goquery.Selection) {
-		doujin_url, _ := s.Find("a").Attr("href")
-		name := s.Find(".caption").Text()
-		img, _ := s.Find("img").Attr("data-src")
-
-		// Check name
-		if len(strings.TrimSpace(name)) == 0 {
-			log.Println("Name is Empty")
-			return
-		}
-
-		// Check thumbnail
-		if _, err := url.Parse(img); err != nil {
-			log.Printf("Thumb is Empty\n%v", err)
-			return
-		}
-
-		// Check url
-		if _, err := url.Parse(doujin_url); err != nil {
-			log.Printf("Thumb is Empty\n%v", err)
-			return
-		}
-
-		d := *NewDoujin(name, doujin_url, img, client)
-
-		doujin_arr = append(doujin_arr, d)
-	})
-
-	return doujin_arr, nil
 }

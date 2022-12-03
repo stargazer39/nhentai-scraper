@@ -12,8 +12,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	"github.com/joho/godotenv"
-	"github.com/minio/minio-go"
 	"github.com/remeh/sizedwaitgroup"
 	"github.com/robertkrimen/otto"
 	"go.mongodb.org/mongo-driver/bson"
@@ -26,6 +30,10 @@ var HTTP_CLIENT = NewHTTPClient(
 		Timeout: 10 * time.Second,
 	},
 )
+
+var s3Client *s3.S3
+var bucket *string
+var uploader *s3manager.Uploader
 
 func main() {
 	log.Println("Starting the scraper")
@@ -59,25 +67,34 @@ func main() {
 
 	SetDBInstance(client)
 
-	// Initialize
-	var (
-		endpoint        = os.Getenv("MINIO_ENPOINT")
-		accessKeyID     = os.Getenv("MINIO_ACCESS_KEY_ID")
-		secretAccessKey = os.Getenv("MINIO_ENPOINT_SECRET_ACCESS_KEY")
-		useSSL          = false
-	)
+	// Connect to backblaze
+	bucket = aws.String(os.Getenv("S3_BUCKET"))
+	endpoint := aws.String(os.Getenv("S3_ENDPOINT"))
+	keyId := os.Getenv("S3_KEY_ID")
+	appKey := os.Getenv("S3_APP_KEY")
+	region := aws.String(os.Getenv("S3_REGION"))
 
-	// Initialize minio client object.
-	minioClient, err := minio.New(endpoint, accessKeyID, secretAccessKey, useSSL)
-	if err != nil {
-		log.Fatalln(err)
+	s3Config := &aws.Config{
+		Credentials:      credentials.NewStaticCredentials(keyId, appKey, ""),
+		Endpoint:         endpoint,
+		Region:           region,
+		S3ForcePathStyle: aws.Bool(true),
 	}
 
-	SetMinioInstance(minioClient)
+	newSession, err := session.NewSession(s3Config)
+
+	check(err)
+
+	s3Client = s3.New(newSession)
+	uploader = s3manager.NewUploader(newSession)
 
 	indexModel := mongo.IndexModel{
 		Keys:    bson.D{{Key: "gallery.id", Value: -1}},
 		Options: options.Index().SetUnique(true),
+	}
+
+	indexModel2 := mongo.IndexModel{
+		Keys: bson.D{{Key: "gallery.num_pages", Value: -1}},
 	}
 
 	indexModelPages := mongo.IndexModel{
@@ -85,14 +102,28 @@ func main() {
 		Options: options.Index().SetUnique(true),
 	}
 
+	indexModelPages2 := mongo.IndexModel{
+		Keys: bson.D{{Key: "name", Value: -1}, {Key: "url", Value: -1}},
+	}
+
 	_, err4 := GetDBInstance().Collection("doujin").Indexes().CreateOne(context.TODO(), indexModel)
 	if err4 != nil {
+		check(err4)
+	}
+
+	_, err6 := GetDBInstance().Collection("doujin").Indexes().CreateOne(context.TODO(), indexModel2)
+	if err6 != nil {
 		check(err4)
 	}
 
 	_, err10 := GetDBInstance().Collection("pages").Indexes().CreateOne(context.TODO(), indexModelPages)
 	if err10 != nil {
 		check(err4)
+	}
+
+	_, err12 := GetDBInstance().Collection("pages").Indexes().CreateOne(context.TODO(), indexModelPages2)
+	if err12 != nil {
+		check(err12)
 	}
 
 	HOME_URL, _ := url.Parse(HOME)
@@ -205,18 +236,53 @@ func main() {
 		}
 
 		// i, _ := primitive.ObjectIDFromHex("6387c227472b92ef6b30cb24")
-		doujin, err := FindDoujin(context.TODO(), bson.D{})
+		log.Println("fetching existing")
+		opt := options.Aggregate().SetBatchSize(1000)
+
+		cur, err := GetDBInstance().Collection("doujin").Aggregate(context.TODO(), GET_INCOMPLETE_DOUJINS_WITH_PAGES, opt)
 
 		check(err)
 
+		/* var page_result []GetIncompleteDoujinsWithPages
+
+		log.Println("query complete. objectifying.")
+		err2 := cur.All(context.TODO(), &page_result) */
+
+		// check(err2)
 		done := 0
 
-		for _, d := range *doujin {
+		// log.Println(len(page_result))
+
+		log.Println("starting service")
+
+		for cur.Next(context.TODO()) {
+			var res GetIncompleteDoujinsWithPages
+
+			if err := cur.Decode(&res); err != nil {
+				log.Fatal(err)
+			}
+
+			//
+
+			pages := res.Gallery.Images.Pages
+			existing_pages := res.Pages
+
+			// log.Printf("%d %d\n", len(pages), len(existing_pages))
+			if len(pages) == len(existing_pages) {
+				log.Panic("Query wrong")
+			}
+
+			for _, ep := range existing_pages {
+				pages[ep.Page].skip = true
+			}
+
+			res.Gallery.Images.Pages = pages
+
 			wg.Add()
-			go func(d DoujinV2) {
+			go func(d GetIncompleteDoujinsWithPages) {
 				defer wg.Done()
 
-				for ii := 0; ii < d.GetTotalPages(); ii++ {
+				for ii := 0; ii < d.Gallery.GetTotalPages(); ii++ {
 					// log.Println(d.GetPage(ii))
 					rpc_mutex.Lock()
 					var reply string
@@ -231,15 +297,26 @@ func main() {
 
 					page_page := d.GetPage(ii)
 
+					if page_page == nil {
+						rpc_mutex.Unlock()
+						continue
+					}
+
+					/* if ok, _ := PageExist(context.TODO(), page_page.Name); ok {
+						log.Printf("Exist %s %d \n", d.Gallery.Title.English, ii)
+						rpc_mutex.Unlock()
+						continue
+					} */
+
 					err = rpc_arr[this_client].Call("DoujinHandler.CachePageURL", &page_page, &reply)
 					rpc_mutex.Unlock()
 					if err != nil {
 						log.Fatal("error:", err)
 					}
 				}
-			}(d)
+			}(res)
 			done++
-			log.Printf("Done %d/%d\n", done, len(*doujin))
+			log.Printf("Done %d\n", done)
 		}
 
 	}

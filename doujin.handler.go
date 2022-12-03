@@ -2,14 +2,14 @@ package main
 
 import (
 	"context"
-	"io"
 	"log"
 	"net/http"
 	"net/rpc"
 	"net/url"
 	"sync"
 
-	"github.com/minio/minio-go"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	"github.com/remeh/sizedwaitgroup"
 	"github.com/robertkrimen/otto"
 )
@@ -28,7 +28,7 @@ func NewDoujinHandler(home_url *url.URL, http_client *HTTPClient, vm_mutex *sync
 		http_client: http_client,
 		vm_mutex:    vm_mutex,
 		jsvm:        jsvm,
-		wg:          sizedwaitgroup.New(100),
+		wg:          sizedwaitgroup.New(1000),
 	}
 	err := rpc.Register(h)
 	if err != nil {
@@ -65,14 +65,14 @@ func (rh *DoujinHandler) CachePageURL(page *Page, reply *string) error {
 		return nil
 	}
 
-	ok, err := PageExist(context.TODO(), page.Name)
+	/* ok, err := PageExist(context.TODO(), page.Name)
 
 	check(err)
 
 	if ok {
 		log.Println("Page exist")
 		return nil
-	}
+	} */
 
 	rh.wg.Add()
 	go func() {
@@ -84,12 +84,38 @@ func (rh *DoujinHandler) CachePageURL(page *Page, reply *string) error {
 			return
 		}
 
-		_, err5 := GetMinioInstance().PutObject("nhentai", page.Name, io.NopCloser(resp.Body), resp.ContentLength, minio.PutObjectOptions{ContentType: resp.Header.Get("Content-type")})
+		_, err = uploader.Upload(&s3manager.UploadInput{
+			Bucket: bucket,
+			Key:    aws.String(page.Name),
+			Body:   resp.Body,
+		})
+
+		if err != nil {
+			log.Printf("Failed to add %s", page.URL)
+			return
+		}
+		/* file, err := os.Create(path.Join("/usr/rclone/sliit-drive/", page.Name))
+
+		if err != nil {
+			check(err)
+		}
+
+		_, err = io.Copy(file, resp.Body)
+
+		if err != nil {
+			log.Printf("Failed to add %s, %v", page.URL, err)
+			return
+		} */
+
+		// if err := GetFTPInstance().Store(page.Name, resp.Body); err != nil {
+		// 	check(err)
+		// }
+		/* _, err5 := GetMinioInstance().PutObject("nhentai", page.Name, io.NopCloser(resp.Body), resp.ContentLength, minio.PutObjectOptions{ContentType: resp.Header.Get("Content-type")})
 
 		if err5 != nil {
 			log.Fatalln(err5)
 			return
-		}
+		} */
 
 		ierr := InsertToPageCollection(page, context.Background())
 

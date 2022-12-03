@@ -237,7 +237,7 @@ func main() {
 
 		// i, _ := primitive.ObjectIDFromHex("6387c227472b92ef6b30cb24")
 		log.Println("fetching existing")
-		opt := options.Aggregate().SetBatchSize(1000)
+		opt := options.Aggregate().SetBatchSize(200)
 
 		cur, err := GetDBInstance().Collection("doujin").Aggregate(context.TODO(), GET_INCOMPLETE_DOUJINS_WITH_PAGES, opt)
 
